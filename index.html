@@ -25,6 +25,9 @@ li span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}li b{cu
 .em{max-width:420px;margin:12vh auto;text-align:center;color:var(--mu)}
 .pg{position:relative;margin:0 auto 16px;background:#fff;box-shadow:0 1px 8px #0003;max-width:none}
 .pg canvas{display:block}.ov{position:absolute;inset:0}
+.pt{position:absolute;top:6px;right:6px;display:flex;align-items:center;gap:2px;background:var(--pn);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:2px 4px;z-index:6;opacity:0;transition:opacity .15s;font-size:12px}
+.pg:hover .pt{opacity:1}.pt i{font-style:normal;color:var(--mu);padding:0 6px}.pt span{cursor:pointer;padding:2px 6px;font-size:16px}
+@media(hover:none){.pt{opacity:1}}
 .t-text .ov,.t-sig .ov{cursor:crosshair}
 .th{position:absolute;display:none;cursor:text;background:#2563eb14;outline:1px solid #2563eb55}
 .t-edit .th{display:block}.th:hover{background:#2563eb33}
@@ -63,6 +66,7 @@ input{font:inherit;color:var(--tx);background:var(--bg);border:1px solid var(--b
  <button id="kp" class="need" disabled>Kompres</button>
  <button data-t="sig" title="Buat &amp; tempel tanda tangan">✍ Tanda Tangan</button>
  <span class="sp"></span>
+ <button id="un" disabled title="Urungkan hapus/putar halaman">↶ Urungkan</button>
  <button id="sp" class="pri need" disabled>Simpan PDF</button>
  <button id="sw" class="need" disabled>Export Word</button>
  <button id="sx2" class="need" disabled>Export Excel</button>
@@ -90,7 +94,7 @@ input{font:inherit;color:var(--tx);background:var(--bg);border:1px solid var(--b
 <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js"></script>
 <script>
 const S=1.4,$=id=>document.getElementById(id);
-let T='sel',docs=[],cur=null,pgs=[],anns=[],sig=null,dl=null;
+let T='sel',docs=[],cur=null,pgs=[],anns=[],sig=null,dl=null,hist=[];
 pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 const toast=m=>{const t=$('ts');t.textContent=m;t.style.opacity=1;clearTimeout(toast.h);toast.h=setTimeout(()=>t.style.opacity=0,2800)};
 (async()=>{try{dl=await window.claude.use('downloads')}catch(e){}})();
@@ -119,7 +123,7 @@ $('mg').onclick=run(async()=>{
  else{const out=await PDFLib.PDFDocument.create();
   for(const d of docs){const src=await PDFLib.PDFDocument.load(d.bytes,{ignoreEncryption:true});(await out.copyPages(src,src.getPageIndices())).forEach(p=>out.addPage(p))}
   bytes=await out.save();name='gabungan.pdf'}
- await openDoc(bytes,name);toast('Siap diedit: '+name);
+ hist=[];$('un').disabled=true;await openDoc(bytes,name);toast('Siap diedit: '+name);
 });
 
 /* ---------- tampilan PDF ---------- */
@@ -134,6 +138,10 @@ async function openDoc(bytes,name){
   const cv=document.createElement('canvas');cv.width=vp.width;cv.height=vp.height;
   const ov=document.createElement('div');ov.className='ov';box.append(cv,ov);vw.append(box);
   const P={n:n-1,ov,w:vp.width/S,h:vp.height/S,items:[]};pgs.push(P);
+  const bar=document.createElement('div');bar.className='pt';bar.innerHTML='<i>Hal '+n+'</i>';
+  [['⟲',-90,'Putar kiri'],['⟳',90,'Putar kanan'],['🗑','del','Hapus halaman']].forEach(([l,op,t])=>{
+   const b=document.createElement('span');b.textContent=l;b.title=t;b.onclick=e=>{e.stopPropagation();pageOp(P,op)};bar.append(b)});
+  box.append(bar);
   ov.onclick=e=>{if(e.target===ov)place(P,e)};ov.onpointerdown=e=>drag(P,e);pbar(P,box);
   await pg.render({canvasContext:cv.getContext('2d'),viewport:vp}).promise;
   const tc=await pg.getTextContent();
@@ -202,18 +210,30 @@ $('sc2').onclick=()=>{
 
 /* ---------- simpan PDF ---------- */
 async function bake(){
- const pdf=await PDFLib.PDFDocument.load(cur.bytes,{ignoreEncryption:true}),F=await pdf.embedFont(PDFLib.StandardFonts.Helvetica),ps=pdf.getPages(),rgb=PDFLib.rgb;
+ const pdf=await PDFLib.PDFDocument.load(cur.bytes,{ignoreEncryption:true}),F=await pdf.embedFont(PDFLib.StandardFonts.Helvetica),ps=pdf.getPages(),rgb=PDFLib.rgb,dg=PDFLib.degrees;
  for(const a of anns){
-  const pg=ps[a.P.n],H=pg.getHeight();
-  if(a.type=='rect'){const o={x:a.x,y:H-a.y-a.h,width:a.w,height:a.h};pg.drawRectangle(a.k=='bx'?{...o,borderColor:rgb(.9,.1,.1),borderWidth:2}:{...o,color:a.k=='rd'?rgb(0,0,0):rgb(1,.9,0),opacity:a.k=='rd'?1:.4});continue}
-  if(a.type=='sig'){pg.drawImage(await pdf.embedPng(a.data),{x:a.x,y:H-a.y-a.h,width:a.w,height:a.h});continue}
+  const pg=ps[a.P.n],{width:W,height:H}=pg.getSize(),r=((pg.getRotation().angle%360)+360)%360;
+  const tf=(x,y)=>r==90?{x:y,y:x}:r==180?{x:W-x,y}:r==270?{x:W-y,y:H-x}:{x,y:H-y};
+  if(a.type=='sig'){const p=tf(a.x,a.y+a.h);pg.drawImage(await pdf.embedPng(a.data),{x:p.x,y:p.y,width:a.w,height:a.h,rotate:dg(r)});continue}
   const ls=a.text.replace(/[^\x20-\x7E\xA0-\xFF\n]/g,'?').split('\n');
-  if(a.o){const w=Math.max(a.o.w,...ls.map(l=>F.widthOfTextAtSize(l,a.fs)));
-   pg.drawRectangle({x:a.o.x-1,y:H-a.o.y-a.o.h-1,width:w+2,height:a.o.h+2,color:rgb(1,1,1)})}
-  ls.forEach((l,i)=>pg.drawText(l,{x:a.x,y:H-(a.y+.945*a.fs+i*1.2*a.fs),size:a.fs,font:F,color:rgb(0,0,0)}));
+  if(a.o){const w=Math.max(a.o.w,...ls.map(l=>F.widthOfTextAtSize(l,a.fs))),p=tf(a.o.x-1,a.o.y+a.o.h+1);
+   pg.drawRectangle({x:p.x,y:p.y,width:w+2,height:a.o.h+2,color:rgb(1,1,1),rotate:dg(r)})}
+  ls.forEach((l,i)=>{const p=tf(a.x,a.y+.945*a.fs+i*1.2*a.fs);pg.drawText(l,{x:p.x,y:p.y,size:a.fs,font:F,color:rgb(0,0,0),rotate:dg(r)})});
  }
  return pdf.save();
 }
+/* hapus / putar halaman: teks & TTD yang sudah ada ikut disatukan ke PDF, lalu bisa diurungkan */
+async function pageOp(P,op){
+ try{
+  const b=await bake(),pdf=await PDFLib.PDFDocument.load(b,{ignoreEncryption:true});
+  if(op=='del'){if(pdf.getPageCount()<2)return toast('Minimal harus ada 1 halaman');pdf.removePage(P.n)}
+  else{const pg=pdf.getPage(P.n);pg.setRotation(PDFLib.degrees(((pg.getRotation().angle+op)%360+360)%360))}
+  const nb=await pdf.save(),y=$('vw').scrollTop;hist.push(b);
+  await openDoc(nb,cur.name);$('vw').scrollTop=y;$('un').disabled=false;
+  toast(op=='del'?'Halaman '+(P.n+1)+' dihapus':'Halaman '+(P.n+1)+' diputar');
+ }catch(e){console.error(e);toast('Gagal: '+e.message)}
+}
+$('un').onclick=async()=>{const b=hist.pop();if(!b)return;const y=$('vw').scrollTop;await openDoc(b,cur.name);$('vw').scrollTop=y;$('un').disabled=!hist.length};
 $('sp').onclick=run(async()=>save(base()+'-edit.pdf',await bake()));
 
 /* ---------- teks per baris (untuk Word & Excel) ---------- */
